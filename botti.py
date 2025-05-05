@@ -4,22 +4,87 @@ import discord
 import random
 import json
 import os
+import time
+from dotenv import load_dotenv
 from discord.ext import commands
 
-BOT_TOKEN = "bot token here"
+load_dotenv()
+
+
+BOT_TOKEN = os.getenv("DISCORD_TOKEN")
 CHANNEL_ID = 1351888158320754823
 GAMES_URL = "https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions"
 BALANCE = "balances.json"
+COOLDOWNS = "cooldowns.json"
+COOLDOWN_TIME = 24 * 60 * 60
+FREE_CREDITS = 1000
 
 COMMAND_HELP = """
 **Botin kommennot**
 `!balance` - Näytä nykyinen saldosi
 `!slot <panos>` - Pelaa pelikonetta (esim. `!slot 100`)
+`!cat` - Näytä söpö kissakuva
+`!freecredits` - 1000 ilmaista kolikkoa (voi käyttää 24h välein)
 """
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+def load_cooldowns():
+    try:
+        if os.path.exists(COOLDOWNS) and os.path.getsize(COOLDOWNS) > 0:
+            with open(COOLDOWNS, 'r') as f:
+                return json.load(f)
+        return {}
+    except (json.JSONDecodeError, FileNotFoundError):
+        return {}
+
+def save_cooldowns(cooldowns):
+    with open(COOLDOWNS, "w") as f:
+        json.dump(cooldowns, f, indent=4)
+        
+def receive_free_credits(user_id):
+    cooldowns = load_cooldowns()
+    user_id = str(user_id)
+    
+    if user_id not in cooldowns:
+        return True
+    
+    last_used = cooldowns[user_id]
+    current_time = int(time.time())
+    return (current_time - last_used) >= COOLDOWN_TIME
+
+def update_cooldowns(user_id):
+    cooldowns = load_cooldowns()
+    cooldowns[str(user_id)] = int(time.time())
+    save_cooldowns(cooldowns)
+    
+@bot.command(name="freecredits", help="1000 ilmaista kolikkoa 24h välein")
+async def free_credits(ctx):
+    user_id = ctx.author.id
+    
+    if not receive_free_credits(user_id):
+        cooldowns = load_cooldowns()
+        last_used = cooldowns.get(str(user_id), 0)
+        remaining_time = COOLDOWN_TIME - (int(time.time()) - last_used)
+        hours = remaining_time // 3600
+        minutes = (remaining_time % 3600) // 60
+        
+        await ctx.send(
+            f"{ctx.author.mention}, olet jo käyttänyt ilmaiset kolikot\n"
+            f"Voit käyttää sen uudelleen {hours} tunnin ja {minutes} minuutin päästä"
+        )
+        return
+    
+    new_balance = update_balance(user_id, FREE_CREDITS)
+    update_cooldowns(user_id)
+
+    await ctx.send(
+        f"{ctx.author.mention}, sait {FREE_CREDITS} ilmaista kolikkoa\n"
+        f"Saldosi on nyt {new_balance}"
+    )
+
 
 SLOT_SYMBOLS = ["🍒", "🍋", "🍊", "🍇", "🍉", "7️⃣"]
 STARTING_BALANCE = 1000
@@ -93,6 +158,22 @@ async def slot_machine(ctx, bet: int):
         f"Saldo: {new_balance} kolikkoa"
     )
 
+@bot.command(name="cat", help="Näytä söpö kissakuva")
+async def cat_pic(ctx):
+    try:
+        response = requests.get("https://api.thecatapi.com/v1/images/search")
+        response.raise_for_status()
+        data = response.json()
+        
+        if data and isinstance(data, list) and len(data) > 0:
+            image_url = data[0]["url"]
+            await ctx.send(image_url)
+        else:
+            await ctx.send("Kissakuvaa ei löytynyt :(")
+            
+    except requests.RequestException as e:
+        print(f"Virhe kissakuvan haussa: {e}")
+        await ctx.send("Jokin meni pieleen kissakuvan haussa")
 
 async def fetchFreeGames():
     try:
